@@ -35,6 +35,8 @@ A utility script that fixes and enables LM Studio to use your Ollama models by c
    - Set Models Directory to the path shown by the script
    - Your Ollama models should now appear in LM Studio from the dropdown
 
+> **Note:** Every time you download a new model with Ollama, you'll need to re-run this script to sync the latest models to your LM Studio models folder.
+
 ## Supported Operating Systems
 
 - macOS
