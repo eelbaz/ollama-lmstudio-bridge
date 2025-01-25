@@ -27,12 +27,12 @@ A utility script that fixes and enables LM Studio to use your Ollama models by c
 
 2. The script will:
    - Scan your Ollama models
-   - Create a `publicmodels/lmstudio` directory in your home folder
-   - Create symbolic links to your Ollama model files
+   - Create the LM Studio models directory (`.lmstudio/models/lmstudio` on macOS/Linux, or equivalent on Windows)
+   - Create symbolic links to your Ollama model files in the LM Studio models directory
 
 3. In LM Studio:
    - Go to Settings
-   - Set Models Directory to the path shown by the script
+   - Set Models Directory to the path shown by the script (the script will display this path when it runs)
    - Your Ollama models should now appear in LM Studio from the dropdown
 
 > **Note:** Every time you download a new model with Ollama, you'll need to re-run this script to sync the latest models to your LM Studio models folder.
