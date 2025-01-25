@@ -349,7 +349,7 @@ done
 [[ "$QUIET" == "false" ]] && {
   log_success "Ollama Bridge complete."
   log_info "Set the Models Directory in LMStudio to:"
-  log_info "    $publicModels_dir/lmstudio"
+  log_info "    $publicModels_dir"
   echo ""  # Add a blank line for cleaner output
 }
 
