@@ -62,10 +62,10 @@ esac
 # Default public models directory based on OS
 case "${OS_TYPE}" in
     Linux*|Darwin*)     
-        publicModels_dir="$HOME_DIR/publicmodels"
+        publicModels_dir="$HOME_DIR/.lmstudio/models"
         ;;
     MINGW*|CYGWIN*|MSYS*)
-        publicModels_dir="$HOME_DIR/Documents/publicmodels"
+        publicModels_dir="$HOME_DIR/Documents/.lmstudio/models"
         ;;
 esac
 

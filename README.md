@@ -45,11 +45,11 @@ A utility script that fixes and enables LM Studio to use your Ollama models by c
 
 - macOS/Linux:
   - Ollama manifests: `~/.ollama/models/manifests/registry.ollama.ai`
-  - Bridge output: `~/publicmodels/lmstudio`
+  - LM Studio models: `~/.lmstudio/models/lmstudio`
 
 - Windows:
   - Ollama manifests: `%USERPROFILE%\AppData\Local\ollama\models\manifests\registry.ollama.ai`
-  - Bridge output: `%USERPROFILE%\Documents\publicmodels\lmstudio`
+  - LM Studio models: `%USERPROFILE%\Documents\.lmstudio\models\lmstudio`
 
 ## Troubleshooting
 
