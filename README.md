@@ -23,7 +23,7 @@ A utility script that fixes and enables LM Studio to use your Ollama models by c
 ## Usage
 
 1. Run the script:
-
+`./ollama-lmstudio-bridge.sh`
 
 2. The script will:
    - Scan your Ollama models
