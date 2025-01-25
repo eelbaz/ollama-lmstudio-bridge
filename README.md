@@ -6,6 +6,7 @@ A utility script that fixes and enables LM Studio to use your Ollama models by c
 ## Prerequisites
 
 - [Ollama](https://ollama.ai) installed with at least one model downloaded
+  - (and ollama models already downloaded. Please confirm by running `ollama list`)
 - [LM Studio](https://lmstudio.ai) installed
 - `jq` command-line JSON processor
   - macOS: `brew install jq`
