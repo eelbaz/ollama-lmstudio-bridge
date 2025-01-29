@@ -25,11 +25,16 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*"
 log_warning() { echo -e "${YELLOW}[WARNING]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*" >&2; }
 log_error() { echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*" >&2; }
 
+# Determine user's home directory more reliably
+HOME_DIR="${HOME:-$(getent passwd $(whoami) | cut -d: -f6)}"
+[ -z "$HOME_DIR" ] && { log_error "Could not determine home directory"; exit 1; }
+
 # Default settings
 VERBOSE=false
 QUIET=false
 SKIP_EXISTING=false
 CUSTOM_MODEL_DIR=""
+OLLAMA_MODEL_DIR="$HOME_DIR/.ollama/models"
 
 # Help message
 show_help() {
@@ -38,11 +43,12 @@ Ollama-LM-Studio Bridge v${VERSION}
 Usage: $(basename "$0") [OPTIONS]
 
 Options:
-  -h, --help           Show this help message
-  -v, --verbose        Enable verbose output
+  -h, --help          Show this help message
+  -v, --verbose       Enable verbose output
   -q, --quiet         Suppress non-essential output
-  -s, --skip-existing  Skip existing symlinks instead of overwriting
+  -s, --skip-existing Skip existing symlinks instead of overwriting
   -d, --dir DIR       Specify custom models directory
+  -o, --ollama-dir    Specify Ollama models directory
   --version           Show version information
 
 Example:
@@ -79,6 +85,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -d|--dir)
             CUSTOM_MODEL_DIR="$2"
+            shift 2
+            ;;
+        -o|--ollama-dir)
+            OLLAMA_MODEL_DIR="$2"
             shift 2
             ;;
         --version)
@@ -126,20 +136,16 @@ fi
 TEMP_DIR=$(mktemp -d) || { log_error "Failed to create temporary directory"; exit 1; }
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
-# Determine user's home directory more reliably
-HOME_DIR="${HOME:-$(getent passwd $(whoami) | cut -d: -f6)}"
-[ -z "$HOME_DIR" ] && { log_error "Could not determine home directory"; exit 1; }
-
 # Determine OS type and set paths
 OS_TYPE="$(uname -s)"
 case "${OS_TYPE}" in
     Linux*)     
-        manifest_dir="$HOME_DIR/.ollama/models/manifests/registry.ollama.ai"
-        blob_dir="$HOME_DIR/.ollama/models/blobs"
+        manifest_dir="$OLLAMA_MODEL_DIR/manifests/registry.ollama.ai"
+        blob_dir="$OLLAMA_MODEL_DIR/blobs"
         ;;
     Darwin*)    
-        manifest_dir="$HOME_DIR/.ollama/models/manifests/registry.ollama.ai"
-        blob_dir="$HOME_DIR/.ollama/models/blobs"
+        manifest_dir="$OLLAMA_MODEL_DIR/manifests/registry.ollama.ai"
+        blob_dir="$OLLAMA_MODEL_DIR/blobs"
         ;;
     MINGW*|CYGWIN*|MSYS*)
         # Windows paths
