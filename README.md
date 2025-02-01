@@ -1,7 +1,7 @@
 # Ollama LM Studio Bridge
 Use your Ollama managed models with LM Studio!
 
-A utility script that fixes and enables LM Studio to use your Ollama models by creating the necessary symbolic links between Ollama's model storage and LM Studio's expected format.
+A shell cli utility that fixes and enables LM Studio to use your Ollama models by creating the necessary symbolic links between Ollama's model storage and LM Studio's expected format.
 
 ## Prerequisites
 
