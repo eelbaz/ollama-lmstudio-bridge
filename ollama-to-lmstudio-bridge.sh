@@ -8,7 +8,7 @@
 #   - jq (for JSON parsing)
 #   - A shell that supports basic parameter expansion (macOS default is fine)
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 
 set -euo pipefail
 
