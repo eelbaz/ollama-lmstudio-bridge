@@ -8,7 +8,7 @@
 #   - jq (for JSON parsing)
 #   - A shell that supports basic parameter expansion (macOS default is fine)
 
-VERSION="1.2.0"
+VERSION="1.2.1"
 
 set -euo pipefail
 
@@ -246,14 +246,36 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 # Test symlink capability
-if ! ln -s "$0" "$TEMP_DIR/__test_symlink__" >/dev/null 2>&1; then
-    log_error "Unable to create symbolic links."
-    if [[ "$OS_TYPE" == MINGW* || "$OS_TYPE" == CYGWIN* || "$OS_TYPE" == MSYS* ]]; then
-        echo "On Windows, you may need to:"
-        echo "1. Run this script as Administrator, or"
-        echo "2. Enable Developer Mode in Windows settings"
+if [[ "$OS_TYPE" == MINGW* || "$OS_TYPE" == CYGWIN* || "$OS_TYPE" == MSYS* ]]; then
+    # Try to enable native Windows symlinks in MSYS2/Git Bash
+    export MSYS=winsymlinks:nativestrict
+    
+    # First try using native ln -s with MSYS=winsymlinks:nativestrict
+    if ln -s "$0" "$TEMP_DIR/__test_symlink__" >/dev/null 2>&1; then
+        [[ "$QUIET" == "false" ]] && log_info "Using native Windows symlinks via MSYS"
+    else
+        # If that fails, try using Windows mklink command
+        if cmd.exe /c "mklink /?>" /dev/null 2>&1; then
+            if cmd.exe /c "mklink $TEMP_DIR\\__test_symlink__ $0" > /dev/null 2>&1; then
+                [[ "$QUIET" == "false" ]] && log_info "Using Windows mklink command"
+            else
+                log_warning "Native symlinks not available. Files will be copied instead."
+                log_info "To enable native symlinks, either:"
+                echo "1. Run Git Bash as Administrator, or"
+                echo "2. Enable Developer Mode in Windows settings"
+                echo "   (Settings > Update & Security > For Developers)"
+                # Don't exit, we'll fall back to copying
+            fi
+        else
+            log_warning "Windows mklink not available. Files will be copied instead."
+        fi
     fi
-    exit 1
+else
+    # Original Unix symlink test
+    if ! ln -s "$0" "$TEMP_DIR/__test_symlink__" >/dev/null 2>&1; then
+        log_error "Unable to create symbolic links."
+        exit 1
+    fi
 fi
 
 [[ "$QUIET" == "false" ]] && {
@@ -401,16 +423,41 @@ for manifest in "${manifest_locations[@]}"; do
     
     # Check if symlink already exists and skip if requested
     if [ -L "$target_link" ] && [ "$SKIP_EXISTING" = "true" ]; then
-      [[ "$QUIET" == "false" ]] && log_info "Skipping existing symlink for $modelName"
-      continue
+        [[ "$QUIET" == "false" ]] && log_info "Skipping existing symlink for $modelName"
+        continue
     fi
     
     [[ "$QUIET" == "false" ]] && log_info "Creating symbolic link for $modelName..."
-    ln -sf "$modelFile" "$target_link" || {
-      log_error "Failed to create symlink for $modelName"
-      continue
-    }
-    [[ "$QUIET" == "false" ]] && log_success "Successfully linked $modelName"
+    
+    if [[ "$OS_TYPE" == MINGW* || "$OS_TYPE" == CYGWIN* || "$OS_TYPE" == MSYS* ]]; then
+        # First try using native ln -s with MSYS=winsymlinks:nativestrict
+        if ln -sf "$modelFile" "$target_link" 2>/dev/null; then
+            [[ "$QUIET" == "false" ]] && log_success "Successfully created native Windows symlink for $modelName"
+        else
+            # Convert Unix paths to Windows paths for mklink
+            win_modelFile=$(cygpath -w "$modelFile")
+            win_target_link=$(cygpath -w "$target_link")
+            
+            # Try Windows mklink as fallback
+            if cmd.exe /c "mklink \"$win_target_link\" \"$win_modelFile\"" > /dev/null 2>&1; then
+                [[ "$QUIET" == "false" ]] && log_success "Successfully created Windows symlink for $modelName using mklink"
+            else
+                log_warning "Falling back to file copy for $modelName..."
+                cp "$modelFile" "$target_link" || {
+                    log_error "Failed to copy file for $modelName"
+                    continue
+                }
+                [[ "$QUIET" == "false" ]] && log_warning "Created file copy instead of symlink for $modelName (uses more disk space)"
+            fi
+        fi
+    else
+        # Original Unix symlink creation
+        ln -sf "$modelFile" "$target_link" || {
+            log_error "Failed to create symlink for $modelName"
+            continue
+        }
+        [[ "$QUIET" == "false" ]] && log_success "Successfully linked $modelName"
+    fi
   else
     log_warning "No model file found for $modelName"
   fi
