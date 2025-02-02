@@ -30,6 +30,7 @@ VERBOSE=false
 QUIET=false
 SKIP_EXISTING=false
 CUSTOM_MODEL_DIR=""
+OLLAMA_MODEL_DIR=""
 
 # Help message
 show_help() {
@@ -43,10 +44,12 @@ Options:
   -q, --quiet         Suppress non-essential output
   -s, --skip-existing  Skip existing symlinks instead of overwriting
   -d, --dir DIR       Specify custom models directory
+  -o, --ollama-dir    Specify Ollama models directory
   --version           Show version information
 
 Example:
   $(basename "$0") --verbose --dir ~/custom/models/path
+  $(basename "$0") --ollama-dir /usr/share/ollama/.ollama/models
 
 Report issues at: https://github.com/yourusername/ollama-lmstudio-bridge
 EOF
@@ -79,6 +82,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -d|--dir)
             CUSTOM_MODEL_DIR="$2"
+            shift 2
+            ;;
+        -o|--ollama-dir)
+            OLLAMA_MODEL_DIR="$2"
             shift 2
             ;;
         --version)
@@ -130,19 +137,82 @@ trap 'rm -rf "$TEMP_DIR"' EXIT
 HOME_DIR="${HOME:-$(getent passwd $(whoami) | cut -d: -f6)}"
 [ -z "$HOME_DIR" ] && { log_error "Could not determine home directory"; exit 1; }
 
+# Function to find Ollama installation directory
+find_ollama_dir() {
+    local ollama_dir
+
+    # If user specified an Ollama directory, use that
+    if [ -n "$OLLAMA_MODEL_DIR" ]; then
+        if [ -d "$OLLAMA_MODEL_DIR" ]; then
+            [ "$VERBOSE" = true ] && log_info "Using specified Ollama directory: $OLLAMA_MODEL_DIR"
+            echo "$OLLAMA_MODEL_DIR"
+            return
+        else
+            log_error "Specified Ollama directory does not exist: $OLLAMA_MODEL_DIR"
+            exit 1
+        fi
+    fi
+
+    # Check if running as ollama user
+    if [ "$(id -u -n)" = "ollama" ]; then
+        ollama_dir="/usr/share/ollama/.ollama/models"
+        [ "$VERBOSE" = true ] && log_info "Running as ollama user, using: $ollama_dir"
+        echo "$ollama_dir"
+        return
+    fi
+
+    # Check if systemd service is running and we have proper access
+    if command -v systemctl >/dev/null 2>&1; then
+        if systemctl is-active --quiet ollama.service; then
+            # Check if we're in ollama group or have direct access
+            if groups | grep -q '\bollama\b' || [ -w "/usr/share/ollama/.ollama/models" ]; then
+                ollama_dir="/usr/share/ollama/.ollama/models"
+                [ "$VERBOSE" = true ] && log_info "Found active ollama service with access, using: $ollama_dir"
+                echo "$ollama_dir"
+                return
+            fi
+        fi
+    fi
+
+    # Check system-wide installation
+    if [ -d "/usr/share/ollama/.ollama/models" ]; then
+        if [ -w "/usr/share/ollama/.ollama/models" ] || groups | grep -q '\bollama\b'; then
+            ollama_dir="/usr/share/ollama/.ollama/models"
+            [ "$VERBOSE" = true ] && log_info "Found system-wide installation with access: $ollama_dir"
+            echo "$ollama_dir"
+            return
+        elif [ -r "/usr/share/ollama/.ollama/models" ]; then
+            ollama_dir="/usr/share/ollama/.ollama/models"
+            [ "$VERBOSE" = true ] && log_info "Found readable system-wide installation: $ollama_dir"
+            echo "$ollama_dir"
+            return
+        fi
+    fi
+
+    # Check user's home directory (for brew and default installations)
+    if [ -d "$HOME/.ollama/models" ]; then
+        ollama_dir="$HOME/.ollama/models"
+        [ "$VERBOSE" = true ] && log_info "Found models in home directory: $ollama_dir"
+        echo "$ollama_dir"
+        return
+    fi
+
+    # Default to user's home directory if nothing else is found
+    ollama_dir="$HOME/.ollama/models"
+    [ "$VERBOSE" = true ] && log_warning "No existing installation found, defaulting to: $ollama_dir"
+    echo "$ollama_dir"
+}
+
 # Determine OS type and set paths
 OS_TYPE="$(uname -s)"
 case "${OS_TYPE}" in
-    Linux*)     
-        manifest_dir="$HOME_DIR/.ollama/models/manifests/registry.ollama.ai"
-        blob_dir="$HOME_DIR/.ollama/models/blobs"
-        ;;
-    Darwin*)    
-        manifest_dir="$HOME_DIR/.ollama/models/manifests/registry.ollama.ai"
-        blob_dir="$HOME_DIR/.ollama/models/blobs"
+    Linux*|Darwin*)     
+        ollama_models_dir="$(find_ollama_dir)"
+        manifest_dir="$ollama_models_dir/manifests/registry.ollama.ai"
+        blob_dir="$ollama_models_dir/blobs"
         ;;
     MINGW*|CYGWIN*|MSYS*)
-        # Windows paths
+        # Windows paths - keeping original behavior for now
         manifest_dir="$HOME_DIR/AppData/Local/ollama/models/manifests/registry.ollama.ai"
         blob_dir="$HOME_DIR/AppData/Local/ollama/models/blobs"
         ;;
