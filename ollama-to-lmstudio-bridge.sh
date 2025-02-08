@@ -8,7 +8,7 @@
 #   - jq (for JSON parsing)
 #   - A shell that supports basic parameter expansion (macOS default is fine)
 
-VERSION="1.2.2"
+VERSION="1.2.3"
 
 set -euo pipefail
 
@@ -203,6 +203,266 @@ find_ollama_dir() {
     echo "$ollama_dir"
 }
 
+# Function to convert between Windows and MSYS paths
+convert_path() {
+    local path="$1"
+    local to_type="$2"  # 'windows' or 'msys'
+    
+    if [ "$to_type" = "windows" ]; then
+        # Convert MSYS to Windows path
+        if [[ "$path" == /* ]]; then
+            # Remove leading slash and add drive letter back
+            path="${path:1}"
+            path="${path/\//:\\}"
+            path="${path//\//\\}"
+        fi
+    else
+        # Convert Windows to MSYS path
+        if [[ "$path" == [A-Za-z]:* ]]; then
+            path="/${path//\\//}"
+            path="${path/:/}"
+        fi
+    fi
+    echo "$path"
+}
+
+# Function to create Windows symlink
+create_windows_symlink() {
+    local source="$1"
+    local target="$2"
+    local win_source
+    local win_target
+    
+    # Convert paths to Windows format
+    win_source="$(convert_path "$source" "windows")"
+    win_target="$(convert_path "$target" "windows")"
+    
+    [ "$VERBOSE" = true ] && log_info "Creating Windows symlink from $win_source to $win_target"
+    
+    # First try native symlink
+    if ln -sf "$source" "$target" 2>/dev/null; then
+        return 0
+    fi
+    
+    # Try mklink as administrator
+    if cmd.exe /c "mklink \"$win_target\" \"$win_source\"" > /dev/null 2>&1; then
+        return 0
+    fi
+    
+    # Fall back to copy if symlinks fail
+    [ "$VERBOSE" = true ] && log_warning "Falling back to file copy for $win_target"
+    cp "$source" "$target"
+    return $?
+}
+
+# Function to validate directory exists and is accessible
+validate_dir() {
+    local dir="$1"
+    local dir_type="$2"
+    
+    if [ ! -d "$dir" ]; then
+        if [ "$VERBOSE" = true ]; then
+            log_warning "$dir_type directory not found: $dir"
+            log_info "Creating directory: $dir"
+        fi
+        mkdir -p "$dir" || {
+            log_error "Failed to create $dir_type directory: $dir"
+            return 1
+        }
+    fi
+    
+    if [ ! -r "$dir" ]; then
+        log_error "Cannot read $dir_type directory: $dir"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Function to find Windows Ollama directory
+find_windows_ollama_dir() {
+    local ollama_dir
+
+    # If user specified an Ollama directory, use that
+    if [ -n "$OLLAMA_MODEL_DIR" ]; then
+        ollama_dir="$(convert_path "$OLLAMA_MODEL_DIR" "msys")"
+        if [ -d "$ollama_dir/manifests/registry.ollama.ai" ]; then
+            [ "$VERBOSE" = true ] && log_info "Using specified Ollama directory: $ollama_dir"
+            echo "$ollama_dir"
+            return
+        else
+            log_error "Specified Ollama directory does not contain Ollama models: $ollama_dir"
+            exit 1
+        fi
+    fi
+
+    # Use find to locate Ollama model directories
+    local found_dir
+    [ "$VERBOSE" = true ] && log_info "Searching for Ollama model directories..."
+
+    # Search all drives from C to Z
+    for drive in {C..Z}; do
+        if [ -d "/$drive" ]; then
+            [ "$VERBOSE" = true ] && log_info "Searching drive $drive:/"
+            found_dir=$(find "/$drive" -type d -path "*/manifests/registry.ollama.ai" 2>/dev/null | head -n 1 | xargs dirname 2>/dev/null | xargs dirname 2>/dev/null)
+            if [ -n "$found_dir" ]; then
+                [ "$VERBOSE" = true ] && log_info "Found Ollama models at: $found_dir"
+                echo "$found_dir"
+                return
+            fi
+        fi
+    done
+
+    # If still not found, check if Ollama is running and get path from process
+    if command -v wmic >/dev/null 2>&1; then
+        local process_path
+        process_path=$(wmic process where "name='ollama.exe'" get ExecutablePath 2>/dev/null | grep -i "ollama.exe")
+        if [ -n "$process_path" ]; then
+            process_path="$(dirname "$(echo "$process_path" | tr -d '\r')")"
+            ollama_dir="$(convert_path "$process_path" "msys")"
+            
+            # Search around the Ollama executable location
+            [ "$VERBOSE" = true ] && log_info "Searching around Ollama executable at: $ollama_dir"
+            
+            # Check parent directories up to root
+            local current_dir="$ollama_dir"
+            while [ "$current_dir" != "/" ]; do
+                found_dir=$(find "$current_dir" -maxdepth 3 -type d -path "*/manifests/registry.ollama.ai" 2>/dev/null | head -n 1 | xargs dirname 2>/dev/null | xargs dirname 2>/dev/null)
+                if [ -n "$found_dir" ]; then
+                    [ "$VERBOSE" = true ] && log_info "Found Ollama models at: $found_dir"
+                    echo "$found_dir"
+                    return
+                fi
+                current_dir="$(dirname "$current_dir")"
+            done
+        fi
+    fi
+
+    # If still not found, try to locate .ollama directory
+    [ "$VERBOSE" = true ] && log_info "Searching for .ollama directory..."
+    found_dir=$(find "$HOME_DIR" -maxdepth 4 -type d -name ".ollama" 2>/dev/null | head -n 1)
+    if [ -n "$found_dir" ]; then
+        found_dir="$found_dir/models"
+        [ "$VERBOSE" = true ] && log_info "Found potential Ollama directory at: $found_dir"
+        if validate_dir "$found_dir" "Ollama models"; then
+            echo "$found_dir"
+            return
+        fi
+    fi
+
+    # If still not found, default to user's AppData
+    ollama_dir="$HOME_DIR/AppData/Local/.ollama/models"
+    ollama_dir="$(convert_path "$ollama_dir" "msys")"
+    [ "$VERBOSE" = true ] && log_warning "No existing installation found, defaulting to: $ollama_dir"
+    
+    # Try to create default directory
+    if validate_dir "$ollama_dir" "Ollama models"; then
+        echo "$ollama_dir"
+        return
+    fi
+    
+    log_error "Could not find or create a valid Ollama models directory"
+    exit 1
+}
+
+# Function to get Windows environment variable value
+get_windows_env() {
+    local var_name="$1"
+    local default_value="$2"
+    
+    # Try environment variable first
+    if [ -n "${!var_name}" ]; then
+        echo "${!var_name}"
+        return
+    fi
+    
+    # Use default paths if environment variable not found
+    case "$var_name" in
+        LOCALAPPDATA)
+            echo "$HOME_DIR/AppData/Local"
+            ;;
+        USERPROFILE)
+            echo "$HOME_DIR"
+            ;;
+        *)
+            echo "$default_value"
+            ;;
+    esac
+}
+
+# Function to normalize Windows paths
+normalize_windows_path() {
+    local path="$1"
+    # Replace backslashes with forward slashes
+    path="${path//\\//}"
+    # Remove any trailing slash
+    path="${path%/}"
+    echo "$path"
+}
+
+# Function to find LM Studio models directory
+find_lmstudio_dir() {
+    local lmstudio_dir
+
+    # If user specified a custom directory, use that
+    if [ -n "$CUSTOM_MODEL_DIR" ]; then
+        lmstudio_dir="$(convert_path "$CUSTOM_MODEL_DIR" "msys")"
+        if validate_dir "$lmstudio_dir" "LM Studio models"; then
+            [ "$VERBOSE" = true ] && log_info "Using specified LM Studio directory: $lmstudio_dir"
+            echo "$lmstudio_dir"
+            return
+        else
+            log_error "Specified LM Studio directory is not accessible: $lmstudio_dir"
+            exit 1
+        fi
+    fi
+
+    # Search for LM Studio directories
+    local search_paths=(
+        "$HOME_DIR/.lmstudio/models"
+        "$HOME_DIR/AppData/Local/LMStudio/models"
+        "$HOME_DIR/AppData/Roaming/LMStudio/models"
+        "$HOME_DIR/Documents/.lmstudio/models"
+        "$HOME_DIR/Documents/LMStudio/models"
+    )
+
+    # Search all drives for LM Studio directories
+    for drive in {C..Z}; do
+        if [ -d "/$drive" ]; then
+            [ "$VERBOSE" = true ] && log_info "Searching drive $drive:/ for LM Studio directories"
+            local found_dir
+            found_dir=$(find "/$drive/Users" -maxdepth 5 -type d -name "models" -path "*LMStudio*" 2>/dev/null | head -n 1)
+            if [ -n "$found_dir" ]; then
+                [ "$VERBOSE" = true ] && log_info "Found LM Studio directory at: $found_dir"
+                echo "$found_dir"
+                return
+            fi
+        fi
+    done
+
+    # Check common paths
+    for path in "${search_paths[@]}"; do
+        path="$(convert_path "$path" "msys")"
+        if [ -d "$path" ] || validate_dir "$path" "LM Studio models"; then
+            [ "$VERBOSE" = true ] && log_info "Using LM Studio directory: $path"
+            echo "$path"
+            return
+        fi
+    done
+
+    # Default to .lmstudio in user's home
+    lmstudio_dir="$HOME_DIR/.lmstudio/models"
+    [ "$VERBOSE" = true ] && log_warning "No existing LM Studio directory found, defaulting to: $lmstudio_dir"
+    
+    if validate_dir "$lmstudio_dir" "LM Studio models"; then
+        echo "$lmstudio_dir"
+        return
+    fi
+    
+    log_error "Could not find or create a valid LM Studio models directory"
+    exit 1
+}
+
 # Determine OS type and set paths
 OS_TYPE="$(uname -s)"
 case "${OS_TYPE}" in
@@ -210,31 +470,19 @@ case "${OS_TYPE}" in
         ollama_models_dir="$(find_ollama_dir)"
         manifest_dir="$ollama_models_dir/manifests/registry.ollama.ai"
         blob_dir="$ollama_models_dir/blobs"
+        publicModels_dir="$HOME_DIR/.lmstudio/models"
         ;;
     MINGW*|CYGWIN*|MSYS*)
-        # Windows paths - keeping original behavior for now
-        manifest_dir="$HOME_DIR/AppData/Local/ollama/models/manifests/registry.ollama.ai"
-        blob_dir="$HOME_DIR/AppData/Local/ollama/models/blobs"
+        ollama_models_dir="$(find_windows_ollama_dir)"
+        manifest_dir="$ollama_models_dir/manifests/registry.ollama.ai"
+        blob_dir="$ollama_models_dir/blobs"
+        publicModels_dir="$(find_lmstudio_dir)"
         ;;
     *)
         log_error "Unsupported operating system: $OS_TYPE"
         exit 1
         ;;
 esac
-
-# Set public models directory based on OS and custom directory argument
-if [ -n "$CUSTOM_MODEL_DIR" ]; then
-    publicModels_dir="$CUSTOM_MODEL_DIR"
-else
-    case "${OS_TYPE}" in
-        Linux*|Darwin*)     
-            publicModels_dir="$HOME_DIR/.lmstudio/models"
-            ;;
-        MINGW*|CYGWIN*|MSYS*)
-            publicModels_dir="$HOME_DIR/Documents/.lmstudio/models"
-            ;;
-    esac
-fi
 
 # Verify jq installation
 if ! command -v jq >/dev/null 2>&1; then
@@ -564,27 +812,13 @@ for manifest in "${manifest_files[@]}"; do
         
         [[ "$QUIET" == "false" ]] && log_info "Creating symbolic link for $model_name..."
         
-        # Platform-specific symlink creation
+        # Create symlink or copy file
         if [[ "$OS_TYPE" == MINGW* || "$OS_TYPE" == CYGWIN* || "$OS_TYPE" == MSYS* ]]; then
-            # First try using native ln -s with MSYS=winsymlinks:nativestrict
-            if ln -sf "$modelFile" "$target_link" 2>/dev/null; then
-                [[ "$QUIET" == "false" ]] && log_success "Successfully created native Windows symlink for $model_name"
+            if create_windows_symlink "$modelFile" "$target_link"; then
+                [[ "$QUIET" == "false" ]] && log_success "Successfully created link for $model_name"
             else
-                # Convert Unix paths to Windows paths for mklink
-                win_modelFile=$(cygpath -w "$modelFile")
-                win_target_link=$(cygpath -w "$target_link")
-                
-                # Try Windows mklink as fallback
-                if cmd.exe /c "mklink \"$win_target_link\" \"$win_modelFile\"" > /dev/null 2>&1; then
-                    [[ "$QUIET" == "false" ]] && log_success "Successfully created Windows symlink for $model_name using mklink"
-                else
-                    log_warning "Falling back to file copy for $model_name..."
-                    cp "$modelFile" "$target_link" || {
-                        log_error "Failed to copy file for $model_name"
-                        continue
-                    }
-                    [[ "$QUIET" == "false" ]] && log_warning "Created file copy instead of symlink for $model_name (uses more disk space)"
-                fi
+                log_error "Failed to create link for $model_name"
+                continue
             fi
         else
             # Original Unix symlink creation
