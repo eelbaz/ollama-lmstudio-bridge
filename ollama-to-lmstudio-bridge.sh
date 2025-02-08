@@ -8,7 +8,7 @@
 #   - jq (for JSON parsing)
 #   - A shell that supports basic parameter expansion (macOS default is fine)
 
-VERSION="1.2.1"
+VERSION="1.2.2"
 
 set -euo pipefail
 
@@ -301,173 +301,315 @@ if [ ! -d "$publicModels_dir" ]; then
     mkdir -p "$publicModels_dir" || { log_error "Failed to create models directory"; exit 1; }
 fi
 
-[[ "$QUIET" == "false" ]] && log_info "Exploring Manifest Directory..."
+# Function to normalize path separators
+normalize_path() {
+    local path="$1"
+    echo "${path//\\//}"
+}
 
-# Find manifest files
-manifest_locations=( $(find "$manifest_dir" -type f) )
-[ ${#manifest_locations[@]} -eq 0 ] && { log_warning "No manifest files found"; exit 0; }
+# Function to validate manifest file
+validate_manifest() {
+    local manifest="$1"
+    if [ ! -f "$manifest" ]; then
+        return 1
+    fi
+    if [ ! -r "$manifest" ]; then
+        return 2
+    fi
+    # Check if it's a valid JSON file
+    if ! jq empty "$manifest" >/dev/null 2>&1; then
+        return 3
+    fi
+    return 0
+}
+
+# Function to get relative path from base
+get_relative_path() {
+    local base="$1"
+    local full="$2"
+    # Remove base path and leading slash
+    echo "${full#$base/}"
+}
+
+# Function to safely create directory
+safe_mkdir() {
+    local dir="$1"
+    if [ ! -d "$dir" ]; then
+        mkdir -p "$dir" || return 1
+    fi
+    # Check if directory is writable
+    if [ ! -w "$dir" ]; then
+        return 2
+    fi
+    return 0
+}
+
+# Verify base manifest directory exists and is readable
+manifest_base_dir="$ollama_models_dir/manifests"
+if [ ! -d "$manifest_base_dir" ]; then
+    log_error "Base manifest directory not found: $manifest_base_dir"
+    exit 1
+fi
+if [ ! -r "$manifest_base_dir" ]; then
+    log_error "Cannot read manifest directory: $manifest_base_dir"
+    exit 1
+fi
+
+[[ "$QUIET" == "false" ]] && log_info "Scanning manifest directory: $manifest_base_dir"
+
+# Initialize array for manifest files
+manifest_files=()
+
+# Platform-specific manifest discovery
+case "${OS_TYPE}" in
+    Linux*|Darwin*)     
+        while IFS= read -r -d '' file; do
+            manifest_files+=("$(normalize_path "$file")")
+        done < <(find "$manifest_base_dir" -type f -print0 2>/dev/null)
+        ;;
+    MINGW*|CYGWIN*|MSYS*)
+        # Try Windows dir command first
+        if command -v cmd.exe >/dev/null 2>&1; then
+            while IFS= read -r file; do
+                manifest_files+=("$(normalize_path "$file")")
+            done < <(cmd.exe /c "dir /s /b /a-d \"$manifest_base_dir\"" 2>/dev/null)
+        fi
+        # Fall back to find if dir fails or returns no results
+        if [ ${#manifest_files[@]} -eq 0 ]; then
+            while IFS= read -r file; do
+                manifest_files+=("$(normalize_path "$file")")
+            done < <(find "$manifest_base_dir" -type f 2>/dev/null)
+        fi
+        ;;
+    *)
+        log_error "Unsupported operating system: $OS_TYPE"
+        exit 1
+        ;;
+esac
+
+# Check if we found any manifest files
+if [ ${#manifest_files[@]} -eq 0 ]; then
+    log_warning "No manifest files found in $manifest_base_dir"
+    exit 0
+fi
 
 [[ "$QUIET" == "false" ]] && {
     log_info "Found manifest files:"
-    for manifest_file in "${manifest_locations[@]}"; do
-        echo "  $manifest_file"
+    for manifest in "${manifest_files[@]}"; do
+        echo "  $manifest"
     done
 }
 
-# Loop through each discovered manifest file
-for manifest in "${manifest_locations[@]}"; do
-  # Using jq to parse top-level keys
-  if ! config_digest="$(jq -r '.config.digest // empty' "$manifest")"; then
-    log_error "Failed to parse config digest from $manifest"
-    continue
-  fi
-  
-  if ! layers_count="$(jq -r '.layers | length' "$manifest")"; then
-    log_error "Failed to parse layers from $manifest"
-    continue
-  fi
+# Process each manifest file
+for manifest in "${manifest_files[@]}"; do
+    # Validate manifest file
+    validate_manifest "$manifest"
+    validation_result=$?
+    case $validation_result in
+        1)
+            log_warning "Manifest file not found: $manifest"
+            continue
+            ;;
+        2)
+            log_warning "Cannot read manifest file: $manifest"
+            continue
+            ;;
+        3)
+            log_warning "Invalid JSON in manifest file: $manifest"
+            continue
+            ;;
+    esac
 
-  # Convert the config digest "sha256:xxxx" -> "sha256-xxxx" path
-  if [ -n "$config_digest" ]; then
-    config_no_prefix="$(echo "$config_digest" | sed 's/sha256://')"
-    modelConfig="$blob_dir/sha256-$config_no_prefix"
-  else
-    log_warning "No config digest found in $manifest"
-    modelConfig=""
-  fi
-
-  # Prepare empty variables for layer-based files
-  modelFile=""
-  modelTemplate=""
-  modelParams=""
-
-  # Loop over each layer
-  for i in $(seq 0 $((layers_count-1))); do
-    if ! mediaType="$(jq -r ".layers[$i].mediaType" "$manifest")"; then
-      log_error "Failed to parse mediaType for layer $i in $manifest"
-      continue
-    fi
+    # Get relative path components
+    relative_path="$(get_relative_path "$manifest_base_dir" "$manifest")"
+    IFS='/' read -ra path_parts <<< "$relative_path"
     
-    if ! digestVal="$(jq -r ".layers[$i].digest" "$manifest")"; then
-      log_error "Failed to parse digest for layer $i in $manifest"
-      continue
-    fi
-    
-    digest_no_prefix="$(echo "$digestVal" | sed 's/sha256://')"
-
-    # If mediaType ends in "model"
-    if [[ "$mediaType" == *"model" ]]; then
-      modelFile="$blob_dir/sha256-$digest_no_prefix"
-    fi
-
-    # If mediaType ends in "template"
-    if [[ "$mediaType" == *"template" ]]; then
-      modelTemplate="$blob_dir/sha256-$digest_no_prefix"
-    fi
-
-    # If mediaType ends in "params"
-    if [[ "$mediaType" == *"params" ]]; then
-      modelParams="$blob_dir/sha256-$digest_no_prefix"
-    fi
-  done
-
-  # Parse JSON from $modelConfig if it exists
-  if [ -n "$modelConfig" ] && [ -f "$modelConfig" ]; then
-    if ! modelConfigObj="$(cat "$modelConfig")"; then
-      log_error "Failed to read model config file: $modelConfig"
-      continue
-    fi
-    
-    modelQuant="$(echo "$modelConfigObj"     | jq -r '.file_type     // empty')"
-    modelExt="$(echo "$modelConfigObj"       | jq -r '.model_format  // empty')"
-    modelTrainedOn="$(echo "$modelConfigObj" | jq -r '.model_type    // empty')"
-  else
-    modelQuant=""
-    modelExt=""
-    modelTrainedOn=""
-  fi
-
-  # Get the parent directory => model name
-  parentDir="$(dirname "$manifest")"
-  modelName="$(basename "$parentDir")"
-
-  [[ "$QUIET" == "false" ]] && {
-    log_info "Processing model: $modelName"
-    log_info "  Quantization: $modelQuant"
-    log_info "  Format: $modelExt"
-    log_info "  Training: $modelTrainedOn"
-  }
-
-  # Ensure $publicModels_dir/lmstudio exists
-  if [ ! -d "$publicModels_dir/lmstudio" ]; then
-    [[ "$QUIET" == "false" ]] && log_info "Creating lmstudio directory..."
-    mkdir -p "$publicModels_dir/lmstudio" || { 
-      log_error "Failed to create lmstudio directory"
-      continue
-    }
-  fi
-
-  # Ensure subdirectory for this modelName exists
-  model_dir="$publicModels_dir/lmstudio/$modelName"
-  if [ ! -d "$model_dir" ]; then
-    [[ "$QUIET" == "false" ]] && log_info "Creating directory for $modelName..."
-    mkdir -p "$model_dir" || {
-      log_error "Failed to create directory for $modelName"
-      continue
-    }
-  fi
-
-  # Create the symlink for the modelFile if it exists
-  if [ -n "$modelFile" ] && [ -f "$modelFile" ]; then
-    target_link="$model_dir/${modelName}-${modelTrainedOn}-${modelQuant}.${modelExt}"
-    
-    # Check if symlink already exists and skip if requested
-    if [ -L "$target_link" ] && [ "$SKIP_EXISTING" = "true" ]; then
-        [[ "$QUIET" == "false" ]] && log_info "Skipping existing symlink for $modelName"
+    # Extract registry and model information
+    if [ ${#path_parts[@]} -lt 2 ]; then
+        log_warning "Invalid manifest path structure: $manifest"
         continue
     fi
     
-    [[ "$QUIET" == "false" ]] && log_info "Creating symbolic link for $modelName..."
+    registry="${path_parts[0]}"
+    model_path=$(printf "/%s" "${path_parts[@]:1}")
+    model_path=${model_path:1}
+    model_path=${model_path%/*} # Remove manifest filename
+
+    # Use original model path
+    model_name="${registry}/${model_path}"
+
+    [[ "$QUIET" == "false" ]] && log_info "Processing model: $model_name from registry: $registry"
+
+    # Using jq to parse top-level keys
+    if ! config_digest="$(jq -r '.config.digest // empty' "$manifest")"; then
+        log_error "Failed to parse config digest from $manifest"
+        continue
+    fi
     
-    if [[ "$OS_TYPE" == MINGW* || "$OS_TYPE" == CYGWIN* || "$OS_TYPE" == MSYS* ]]; then
-        # First try using native ln -s with MSYS=winsymlinks:nativestrict
-        if ln -sf "$modelFile" "$target_link" 2>/dev/null; then
-            [[ "$QUIET" == "false" ]] && log_success "Successfully created native Windows symlink for $modelName"
-        else
-            # Convert Unix paths to Windows paths for mklink
-            win_modelFile=$(cygpath -w "$modelFile")
-            win_target_link=$(cygpath -w "$target_link")
-            
-            # Try Windows mklink as fallback
-            if cmd.exe /c "mklink \"$win_target_link\" \"$win_modelFile\"" > /dev/null 2>&1; then
-                [[ "$QUIET" == "false" ]] && log_success "Successfully created Windows symlink for $modelName using mklink"
-            else
-                log_warning "Falling back to file copy for $modelName..."
-                cp "$modelFile" "$target_link" || {
-                    log_error "Failed to copy file for $modelName"
-                    continue
-                }
-                [[ "$QUIET" == "false" ]] && log_warning "Created file copy instead of symlink for $modelName (uses more disk space)"
-            fi
-        fi
+    if ! layers_count="$(jq -r '.layers | length' "$manifest")"; then
+        log_error "Failed to parse layers from $manifest"
+        continue
+    fi
+
+    # Convert the config digest "sha256:xxxx" -> "sha256-xxxx" path
+    if [ -n "$config_digest" ]; then
+        config_no_prefix="$(echo "$config_digest" | sed 's/sha256://')"
+        modelConfig="$blob_dir/sha256-$config_no_prefix"
     else
-        # Original Unix symlink creation
-        ln -sf "$modelFile" "$target_link" || {
-            log_error "Failed to create symlink for $modelName"
+        log_warning "No config digest found in $manifest"
+        modelConfig=""
+    fi
+
+    # Prepare empty variables for layer-based files
+    modelFile=""
+    modelTemplate=""
+    modelParams=""
+
+    # Loop over each layer
+    for i in $(seq 0 $((layers_count-1))); do
+        if ! mediaType="$(jq -r ".layers[$i].mediaType" "$manifest")"; then
+            log_error "Failed to parse mediaType for layer $i in $manifest"
+            continue
+        fi
+        
+        if ! digestVal="$(jq -r ".layers[$i].digest" "$manifest")"; then
+            log_error "Failed to parse digest for layer $i in $manifest"
+            continue
+        fi
+        
+        digest_no_prefix="$(echo "$digestVal" | sed 's/sha256://')"
+
+        # If mediaType ends in "model"
+        if [[ "$mediaType" == *"model" ]]; then
+            modelFile="$blob_dir/sha256-$digest_no_prefix"
+        fi
+
+        # If mediaType ends in "template"
+        if [[ "$mediaType" == *"template" ]]; then
+            modelTemplate="$blob_dir/sha256-$digest_no_prefix"
+        fi
+
+        # If mediaType ends in "params"
+        if [[ "$mediaType" == *"params" ]]; then
+            modelParams="$blob_dir/sha256-$digest_no_prefix"
+        fi
+    done
+
+    # Parse JSON from $modelConfig if it exists
+    if [ -n "$modelConfig" ] && [ -f "$modelConfig" ]; then
+        if ! modelConfigObj="$(cat "$modelConfig")"; then
+            log_error "Failed to read model config file: $modelConfig"
+            continue
+        fi
+        
+        modelQuant="$(echo "$modelConfigObj"     | jq -r '.file_type     // empty')"
+        modelExt="$(echo "$modelConfigObj"       | jq -r '.model_format  // empty')"
+        modelTrainedOn="$(echo "$modelConfigObj" | jq -r '.model_type    // empty')"
+    else
+        modelQuant=""
+        modelExt=""
+        modelTrainedOn=""
+    fi
+
+    # Get the parent directory => model name
+    parentDir="$(dirname "$manifest")"
+    modelName="$(basename "$parentDir")"
+
+    [[ "$QUIET" == "false" ]] && {
+        log_info "Processing model: $modelName"
+        log_info "  Quantization: $modelQuant"
+        log_info "  Format: $modelExt"
+        log_info "  Training: $modelTrainedOn"
+    }
+
+    # Ensure $publicModels_dir/lmstudio exists
+    if [ ! -d "$publicModels_dir/lmstudio" ]; then
+        [[ "$QUIET" == "false" ]] && log_info "Creating lmstudio directory..."
+        mkdir -p "$publicModels_dir/lmstudio" || { 
+            log_error "Failed to create lmstudio directory"
             continue
         }
-        [[ "$QUIET" == "false" ]] && log_success "Successfully linked $modelName"
     fi
-  else
-    log_warning "No model file found for $modelName"
-  fi
+
+    # Ensure subdirectory for this modelName exists
+    model_dir="$publicModels_dir/lmstudio/$modelName"
+    if [ ! -d "$model_dir" ]; then
+        [[ "$QUIET" == "false" ]] && log_info "Creating directory for $modelName..."
+        mkdir -p "$model_dir" || {
+            log_error "Failed to create directory for $modelName"
+            continue
+        }
+    fi
+
+    # Create the symlink for the modelFile if it exists
+    if [ -n "$modelFile" ] && [ -f "$modelFile" ]; then
+        # Create target directory preserving original path structure
+        target_dir="$publicModels_dir/lmstudio/$model_name"
+        if ! safe_mkdir "$target_dir"; then
+            log_error "Failed to create directory: $target_dir"
+            continue
+        fi
+
+        # Build target link name with all available information
+        target_link="$target_dir/${model_path##*/}"
+        [ -n "$modelTrainedOn" ] && target_link="${target_link}-${modelTrainedOn}"
+        [ -n "$modelQuant" ] && target_link="${target_link}-${modelQuant}"
+        [ -n "$modelExt" ] && target_link="${target_link}.${modelExt}"
+        
+        # Check if symlink already exists and skip if requested
+        if [ -L "$target_link" ] && [ "$SKIP_EXISTING" = "true" ]; then
+            [[ "$QUIET" == "false" ]] && log_info "Skipping existing symlink for $model_name"
+            continue
+        fi
+        
+        [[ "$QUIET" == "false" ]] && log_info "Creating symbolic link for $model_name..."
+        
+        # Platform-specific symlink creation
+        if [[ "$OS_TYPE" == MINGW* || "$OS_TYPE" == CYGWIN* || "$OS_TYPE" == MSYS* ]]; then
+            # First try using native ln -s with MSYS=winsymlinks:nativestrict
+            if ln -sf "$modelFile" "$target_link" 2>/dev/null; then
+                [[ "$QUIET" == "false" ]] && log_success "Successfully created native Windows symlink for $model_name"
+            else
+                # Convert Unix paths to Windows paths for mklink
+                win_modelFile=$(cygpath -w "$modelFile")
+                win_target_link=$(cygpath -w "$target_link")
+                
+                # Try Windows mklink as fallback
+                if cmd.exe /c "mklink \"$win_target_link\" \"$win_modelFile\"" > /dev/null 2>&1; then
+                    [[ "$QUIET" == "false" ]] && log_success "Successfully created Windows symlink for $model_name using mklink"
+                else
+                    log_warning "Falling back to file copy for $model_name..."
+                    cp "$modelFile" "$target_link" || {
+                        log_error "Failed to copy file for $model_name"
+                        continue
+                    }
+                    [[ "$QUIET" == "false" ]] && log_warning "Created file copy instead of symlink for $model_name (uses more disk space)"
+                fi
+            fi
+        else
+            # Original Unix symlink creation
+            ln -sf "$modelFile" "$target_link" || {
+                log_error "Failed to create symlink for $model_name"
+                continue
+            }
+            [[ "$QUIET" == "false" ]] && log_success "Successfully linked $model_name"
+        fi
+    else
+        log_warning "No model file found for $model_name"
+    fi
 done
 
 [[ "$QUIET" == "false" ]] && {
-  log_success "Ollama Bridge complete."
-  log_info "Set the Models Directory in LMStudio to:"
-  log_info "    $publicModels_dir"
-  echo ""  # Add a blank line for cleaner output
+    log_success "Ollama Bridge complete."
+    
+    # Cleanup empty directories
+    if [ -d "$publicModels_dir/lmstudio" ]; then
+        find "$publicModels_dir/lmstudio" -type d -empty -delete 2>/dev/null || true
+    fi
+    
+    log_info "Set the Models Directory in LMStudio to:"
+    log_info "    $publicModels_dir"
+    echo ""  # Add a blank line for cleaner output
 }
 
 exit 0
