@@ -25,14 +25,15 @@ A cli utility script that fixes and enables LM Studio to use your Ollama models 
 1. Run the script:
 ```bash
 # Simple usage
-./ollama-to-lmstudio-bridge.sh
+./ollama-to-lmstudio-bridge.sh --run
 
 # Or with options
-./ollama-to-lmstudio-bridge.sh [OPTIONS]
+./ollama-to-lmstudio-bridge.sh --run [OPTIONS]
 ```
 
 Available options:
 - `-h, --help`: Show help message
+- `-r, --run`: Run the script to execute needed changes
 - `-v, --verbose`: Enable verbose output
 - `-q, --quiet`: Suppress non-essential output
 - `-s, --skip-existing`: Skip existing symlinks instead of overwriting
@@ -43,10 +44,10 @@ Available options:
 Examples:
 ```bash
 # Basic usage
-./ollama-to-lmstudio-bridge.sh
+./ollama-to-lmstudio-bridge.sh --run
 
 # With system-wide Ollama installation
-./ollama-to-lmstudio-bridge.sh -o /usr/share/ollama/.ollama/models
+./ollama-to-lmstudio-bridge.sh --run -o /usr/share/ollama/.ollama/models
 ```
 
 2. The script will:
