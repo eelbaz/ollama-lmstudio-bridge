@@ -17,7 +17,7 @@ A cli utility script that fixes and enables LM Studio to use your Ollama models 
 
 1. Clone the repository: `git clone https://github.com/eelbaz/ollama-lmstudio-bridge.git`
 2. `cd ollama-lmstudio-bridge`
-3. Make the script executable: `chmod +x ollama-lmstudio-bridge.sh`
+3. Make the script executable: `chmod +x ollama-to-lmstudio-bridge.sh`
 
 
 ## Usage
