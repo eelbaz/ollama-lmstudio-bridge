@@ -8,7 +8,7 @@
 #   - jq (for JSON parsing)
 #   - A shell that supports basic parameter expansion (macOS default is fine)
 
-VERSION="1.2.3"
+VERSION="1.2.4"
 
 set -euo pipefail
 
@@ -26,6 +26,7 @@ log_warning() { echo -e "${YELLOW}[WARNING]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*
 log_error() { echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*" >&2; }
 
 # Default settings
+RUN=false
 VERBOSE=false
 QUIET=false
 SKIP_EXISTING=false
@@ -36,10 +37,11 @@ OLLAMA_MODEL_DIR=""
 show_help() {
     cat << EOF
 Ollama-LM-Studio Bridge v${VERSION}
-Usage: $(basename "$0") [OPTIONS]
+Usage: $(basename "$0") --run [OPTIONS]
 
 Options:
   -h, --help           Show this help message
+  -r, --run            Run the script to execute needed changes
   -v, --verbose        Enable verbose output
   -q, --quiet         Suppress non-essential output
   -s, --skip-existing  Skip existing symlinks instead of overwriting
@@ -48,8 +50,8 @@ Options:
   --version           Show version information
 
 Example:
-  $(basename "$0") --verbose --dir ~/custom/models/path
-  $(basename "$0") --ollama-dir /usr/share/ollama/.ollama/models
+  $(basename "$0") --run --verbose --dir ~/custom/models/path
+  $(basename "$0") --run --ollama-dir /usr/share/ollama/.ollama/models
 
 Report issues at: https://github.com/yourusername/ollama-lmstudio-bridge
 EOF
@@ -67,6 +69,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         -h|--help)
             show_help
+            ;;
+        -r|--run)
+            RUN=true
+            shift
             ;;
         -v|--verbose)
             VERBOSE=true
@@ -98,6 +104,8 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+[ "$RUN" == "false" ] && show_help
 
 # Enable verbose mode if requested
 [[ "$VERBOSE" == "true" ]] && set -x
